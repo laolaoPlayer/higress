@@ -1,0 +1,22 @@
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-quota-per-model
+  namespace: higress-system
+spec:
+  defaultConfig: {}
+  defaultConfigDisable: true
+  matchRules:
+  - config:
+      redis_key_prefix: "ai_model_quota:"
+      admin_consumer: admin
+      admin_path: /quota
+      redis:
+        service_name: redis-service.default.svc.cluster.local
+        service_port: 6379
+        timeout: 2000
+    configDisable: false
+    ingress:
+    - default/ai-route
+  phase: UNSPECIFIED_PHASE
+  priority: 280
