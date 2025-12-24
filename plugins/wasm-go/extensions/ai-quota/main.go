@@ -96,13 +96,20 @@ func onHttpRequestHeaders(context wrapper.HttpContext, config QuotaConfig) types
 	log.Debugf("onHttpRequestHeaders()")
 
 	// Get consumer from authentication plugin
+	// Try x-mse-consumer first (key-auth, jwt-auth)
 	consumer, err := proxywasm.GetHttpRequestHeader("x-mse-consumer")
-	if err != nil {
-		return deniedNoKeyAuthData()
+	if err != nil || consumer == "" {
+		// Fallback to x-consumer-name (ext-auth)
+		consumer, err = proxywasm.GetHttpRequestHeader("x-consumer-name")
+		if err != nil {
+			return deniedNoKeyAuthData()
+		}
+		if consumer == "" {
+			return deniedUnauthorizedConsumer()
+		}
 	}
-	if consumer == "" {
-		return deniedUnauthorizedConsumer()
-	}
+
+	log.Debugf("Got consumer from header: %s", consumer)
 
 	// Check if this is a chat completion request
 	rawPath := context.Path()
@@ -115,18 +122,28 @@ func onHttpRequestHeaders(context wrapper.HttpContext, config QuotaConfig) types
 	context.DontReadRequestBody()
 
 	// Check quota from Redis
-	config.redisClient.Get(config.RedisKeyPrefix+consumer, func(response resp.Value) {
+	redisKey := config.RedisKeyPrefix + consumer
+	log.Debugf("Checking quota for consumer:%s, redis_key:%s", consumer, redisKey)
+
+	config.redisClient.Get(redisKey, func(response resp.Value) {
 		isDenied := false
+		quota := 0
+
 		if err := response.Error(); err != nil {
+			log.Errorf("Redis error for key %s: %v", redisKey, err)
 			isDenied = true
-		}
-		if response.IsNull() {
+		} else if response.IsNull() {
+			log.Warnf("Redis key not found: %s", redisKey)
 			isDenied = true
+		} else {
+			quota = response.Integer()
+			if quota <= 0 {
+				log.Warnf("Quota exhausted for consumer:%s, quota:%d", consumer, quota)
+				isDenied = true
+			}
 		}
-		if response.Integer() <= 0 {
-			isDenied = true
-		}
-		log.Debugf("get consumer:%s quota:%d isDenied:%t", consumer, response.Integer(), isDenied)
+
+		log.Debugf("Consumer:%s, RedisKey:%s, Quota:%d, Denied:%t", consumer, redisKey, quota, isDenied)
 		if isDenied {
 			util.SendResponse(http.StatusForbidden, "ai-quota.noquota", "text/plain", "Request denied by ai quota check, No quota left")
 			return
