@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/alibaba/higress/plugins/golang-filter/mcp-server/servers/higress"
 	"github.com/alibaba/higress/plugins/golang-filter/mcp-session/common"
@@ -63,6 +65,74 @@ type AiRouteFallbackConfig struct {
 
 // AiRouteResponse represents the API response for AI route operations
 type AiRouteResponse = higress.APIResponse[AiRoute]
+
+// validateAiProvidersConcurrently validates that all AI providers exist concurrently
+// This improves performance by parallelizing provider validation requests
+func validateAiProvidersConcurrently(ctx context.Context, client *higress.HigressClient, configurations map[string]interface{}) error {
+	// Collect all provider names that need validation
+	providerNames := make(map[string]bool)
+
+	// Collect providers from upstreams
+	if upstreams, ok := configurations["upstreams"].([]interface{}); ok && len(upstreams) > 0 {
+		for _, upstream := range upstreams {
+			if upstreamMap, ok := upstream.(map[string]interface{}); ok {
+				if providerName, ok := upstreamMap["provider"].(string); ok && providerName != "" {
+					providerNames[providerName] = true
+				}
+			}
+		}
+	}
+
+	// Collect providers from fallback upstreams
+	if fallbackConfig, ok := configurations["fallbackConfig"].(map[string]interface{}); ok {
+		if fallbackUpstreams, ok := fallbackConfig["upstreams"].([]interface{}); ok && len(fallbackUpstreams) > 0 {
+			for _, upstream := range fallbackUpstreams {
+				if upstreamMap, ok := upstream.(map[string]interface{}); ok {
+					if providerName, ok := upstreamMap["provider"].(string); ok && providerName != "" {
+						providerNames[providerName] = true
+					}
+				}
+			}
+		}
+	}
+
+	// If no providers to validate, return early
+	if len(providerNames) == 0 {
+		return nil
+	}
+
+	// Validate all providers concurrently with a shorter timeout per request
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(providerNames))
+
+	for providerName := range providerNames {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+
+			// Create a context with a shorter timeout (5 seconds per provider check)
+			// to fail fast if the backend is slow
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			_, err := client.Get(checkCtx, fmt.Sprintf("/v1/ai/providers/%s", name))
+			if err != nil {
+				errChan <- fmt.Errorf("Please create the AI provider '%s' first and then create the AI route", name)
+			}
+		}(providerName)
+	}
+
+	// Wait for all validations to complete
+	wg.Wait()
+	close(errChan)
+
+	// Return the first error encountered, if any
+	if err := <-errChan; err != nil {
+		return err
+	}
+
+	return nil
+}
 
 // RegisterAiRouteTools registers all AI route management tools
 func RegisterAiRouteTools(mcpServer *common.MCPServer, client *higress.HigressClient) {
@@ -155,36 +225,9 @@ func handleAddAiRoute(client *higress.HigressClient) common.ToolHandlerFunc {
 			return nil, fmt.Errorf("missing required field 'upstreams' in configurations")
 		}
 
-		// Validate AI providers exist in upstreams
-		if upstreams, ok := configurations["upstreams"].([]interface{}); ok && len(upstreams) > 0 {
-			for _, upstream := range upstreams {
-				if upstreamMap, ok := upstream.(map[string]interface{}); ok {
-					if providerName, ok := upstreamMap["provider"].(string); ok {
-						// Check if AI provider exists
-						_, err := client.Get(ctx, fmt.Sprintf("/v1/ai/providers/%s", providerName))
-						if err != nil {
-							return nil, fmt.Errorf("Please create the AI provider '%s' first and then create the AI route", providerName)
-						}
-					}
-				}
-			}
-		}
-
-		// Validate AI providers exist in fallback upstreams
-		if fallbackConfig, ok := configurations["fallbackConfig"].(map[string]interface{}); ok {
-			if fallbackUpstreams, ok := fallbackConfig["upstreams"].([]interface{}); ok && len(fallbackUpstreams) > 0 {
-				for _, upstream := range fallbackUpstreams {
-					if upstreamMap, ok := upstream.(map[string]interface{}); ok {
-						if providerName, ok := upstreamMap["provider"].(string); ok {
-							// Check if AI provider exists
-							_, err := client.Get(ctx, fmt.Sprintf("/v1/ai/providers/%s", providerName))
-							if err != nil {
-								return nil, fmt.Errorf("Please create the AI provider '%s' first and then create the AI route", providerName)
-							}
-						}
-					}
-				}
-			}
+		// Validate AI providers exist concurrently
+		if err := validateAiProvidersConcurrently(ctx, client, configurations); err != nil {
+			return nil, err
 		}
 
 		respBody, err := client.Post(ctx, "/v1/ai/routes", configurations)
@@ -264,6 +307,20 @@ func handleUpdateAiRoute(client *higress.HigressClient) common.ToolHandlerFunc {
 		}
 		if newConfig.FallbackConfig != nil {
 			currentConfig.FallbackConfig = newConfig.FallbackConfig
+		}
+
+		// Validate AI providers exist if upstreams or fallback config were updated
+		configMap := make(map[string]interface{})
+		if newConfig.Upstreams != nil {
+			configMap["upstreams"] = configurations["upstreams"]
+		}
+		if newConfig.FallbackConfig != nil {
+			configMap["fallbackConfig"] = configurations["fallbackConfig"]
+		}
+		if len(configMap) > 0 {
+			if err := validateAiProvidersConcurrently(ctx, client, configMap); err != nil {
+				return nil, err
+			}
 		}
 
 		respBody, err := client.Put(ctx, fmt.Sprintf("/v1/ai/routes/%s", name), currentConfig)
