@@ -46,6 +46,9 @@ const (
 	// before overwriting Authorization with the provider's API token, so that auth plugins still see
 	// the client credential when the request is internally redirected (e.g. AI route fallback).
 	HeaderOriginalAuth = "x-hi-original-auth"
+	// HeaderFallbackFrom is added by the custom_response redirect policy of AI route fallback, and
+	// marks the current pass as an internal redirect re-entry within this gateway.
+	HeaderFallbackFrom = "x-higress-fallback-from"
 )
 
 // Currently, x-forwarded-xxx headers only apply for forward_auth.
@@ -170,12 +173,15 @@ func buildExtAuthRequestHeaders(ctx wrapper.HttpContext, cfg config.ExtAuthConfi
 	return extAuthReqHeaders
 }
 
-// extractAuthorization returns the client's credential, preferring the original Authorization
-// header saved by ai-proxy over the current one, which ai-proxy may have replaced with the
-// provider's API token before an internal redirect.
+// extractAuthorization returns the client's credential. On an AI route fallback re-entry, the
+// Authorization header has already been replaced by ai-proxy with the provider's API token, so the
+// original Authorization saved by ai-proxy is used instead. On the first pass, X-HI-ORIGINAL-AUTH
+// is not trusted, as it may be supplied by the client or by a cascaded gateway.
 func extractAuthorization(reqHeaders [][2]string) string {
-	if authorization := util.ExtractFromHeader(reqHeaders, HeaderOriginalAuth); authorization != "" {
-		return authorization
+	if util.ExtractFromHeader(reqHeaders, HeaderFallbackFrom) != "" {
+		if authorization := util.ExtractFromHeader(reqHeaders, HeaderOriginalAuth); authorization != "" {
+			return authorization
+		}
 	}
 	return util.ExtractFromHeader(reqHeaders, HeaderAuthorization)
 }

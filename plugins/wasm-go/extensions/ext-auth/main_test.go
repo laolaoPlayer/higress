@@ -540,12 +540,19 @@ func TestExtractAuthorization(t *testing.T) {
 		{":path", "/v1/chat/completions"},
 		{"authorization", "Bearer provider-token"},
 		{"X-HI-ORIGINAL-AUTH", "Bearer client-key"},
+		{"x-higress-fallback-from", "ai-route-test.internal"},
 	}))
 
-	// 原始值为空时回退到 Authorization
+	// 首跳（非 fallback 重入）：不信任客户端或级联网关带来的 X-HI-ORIGINAL-AUTH
 	require.Equal(t, "Bearer client-key", extractAuthorization([][2]string{
 		{"authorization", "Bearer client-key"},
-		{"x-hi-original-auth", ""},
+		{"x-hi-original-auth", "Bearer other-key"},
+	}))
+
+	// fallback 重入但没有原始值时回退到 Authorization
+	require.Equal(t, "Bearer client-key", extractAuthorization([][2]string{
+		{"authorization", "Bearer client-key"},
+		{"x-higress-fallback-from", "ai-route-test.internal"},
 	}))
 
 	require.Equal(t, "", extractAuthorization([][2]string{{":path", "/"}}))
