@@ -50,7 +50,7 @@ description: Ext 认证插件实现了调用外部授权服务进行认证鉴权
 
 | 名称                     | 数据类型               | 必填 | 默认值 | 描述                                                         |
 |--------------------------|------------------------|------|--------|--------------------------------------------------------------|
-| `allowed_headers`        | array of StringMatcher | 否   | -      | 设置后，匹配项的客户端请求头将添加到授权服务请求中的请求头中。除了用户自定义的头部匹配规则外，授权服务请求中会自动包含 `Authorization` 这个HTTP头（`endpoint_mode` 为 `forward_auth` 时，会添加 `X-Forwarded-*` 的请求头） |
+| `allowed_headers`        | array of StringMatcher | 否   | -      | 设置后，匹配项的客户端请求头将添加到授权服务请求中的请求头中。除了用户自定义的头部匹配规则外，授权服务请求中会自动包含 `Authorization` 这个HTTP头（若请求中存在 ai-proxy 保存的原始鉴权头 `X-HI-ORIGINAL-AUTH`，则优先使用它作为 `Authorization` 的值，以便 AI 路由 fallback 内部重定向后仍能用客户端原始凭证鉴权；`endpoint_mode` 为 `forward_auth` 时，会添加 `X-Forwarded-*` 的请求头） |
 | `headers_to_add`         | map[string]string      | 否   | -      | 设置将包含在授权服务请求中的请求头列表。请注意，同名的客户端请求头将被覆盖 |
 | `with_request_body`      | bool                   | 否   | false  | 缓冲客户端请求体，并将其发送至鉴权请求中（HTTP Method为GET、OPTIONS、HEAD请求时不生效） |
 | `max_request_body_bytes` | int                    | 否   | 10MB   | 设置在内存中保存客户端请求体的最大尺寸。当客户端请求体达到在此字段中设置的数值时，将会返回HTTP 413状态码，并且不会启动授权过程。注意，这个设置会优先于 `failure_mode_allow` 的配置 |

@@ -42,6 +42,10 @@ func init() {
 const (
 	HeaderAuthorization    = "authorization"
 	HeaderFailureModeAllow = "x-envoy-auth-failure-mode-allowed"
+	// HeaderOriginalAuth carries the client's original Authorization header. ai-proxy saves it here
+	// before overwriting Authorization with the provider's API token, so that auth plugins still see
+	// the client credential when the request is internally redirected (e.g. AI route fallback).
+	HeaderOriginalAuth = "x-hi-original-auth"
 )
 
 // Currently, x-forwarded-xxx headers only apply for forward_auth.
@@ -147,7 +151,7 @@ func buildExtAuthRequestHeaders(ctx wrapper.HttpContext, cfg config.ExtAuthConfi
 	}
 
 	// Add the Authorization header if present
-	authorization := util.ExtractFromHeader(reqHeaders, HeaderAuthorization)
+	authorization := extractAuthorization(reqHeaders)
 	if authorization != "" {
 		extAuthReqHeaders.Set(HeaderAuthorization, authorization)
 	}
@@ -164,6 +168,16 @@ func buildExtAuthRequestHeaders(ctx wrapper.HttpContext, cfg config.ExtAuthConfi
 		extAuthReqHeaders.Set(HeaderXForwardedHost, ctx.Host())
 	}
 	return extAuthReqHeaders
+}
+
+// extractAuthorization returns the client's credential, preferring the original Authorization
+// header saved by ai-proxy over the current one, which ai-proxy may have replaced with the
+// provider's API token before an internal redirect.
+func extractAuthorization(reqHeaders [][2]string) string {
+	if authorization := util.ExtractFromHeader(reqHeaders, HeaderOriginalAuth); authorization != "" {
+		return authorization
+	}
+	return util.ExtractFromHeader(reqHeaders, HeaderAuthorization)
 }
 
 func callExtAuthServerErrorHandler(config config.ExtAuthConfig, statusCode int, extAuthRespHeaders http.Header, responseBody []byte) {

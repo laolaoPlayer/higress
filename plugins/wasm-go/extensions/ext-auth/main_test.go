@@ -527,3 +527,26 @@ func TestOnHttpRequestBody(t *testing.T) {
 		})
 	})
 }
+
+func TestExtractAuthorization(t *testing.T) {
+	// 普通请求：使用 Authorization
+	require.Equal(t, "Bearer client-key", extractAuthorization([][2]string{
+		{":path", "/v1/chat/completions"},
+		{"authorization", "Bearer client-key"},
+	}))
+
+	// fallback 内部重定向：Authorization 已被 ai-proxy 改写为服务商 token，应使用 ai-proxy 保存的原始值
+	require.Equal(t, "Bearer client-key", extractAuthorization([][2]string{
+		{":path", "/v1/chat/completions"},
+		{"authorization", "Bearer provider-token"},
+		{"X-HI-ORIGINAL-AUTH", "Bearer client-key"},
+	}))
+
+	// 原始值为空时回退到 Authorization
+	require.Equal(t, "Bearer client-key", extractAuthorization([][2]string{
+		{"authorization", "Bearer client-key"},
+		{"x-hi-original-auth", ""},
+	}))
+
+	require.Equal(t, "", extractAuthorization([][2]string{{":path", "/"}}))
+}
